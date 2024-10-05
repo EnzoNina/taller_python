@@ -12,8 +12,8 @@ from tensorflow.keras.callbacks import EarlyStopping
 import keras_tuner as kt  # Importar Keras Tuner para optimizar hiperparámetros
 
 #Definimos la ruta de la carpeta y la ruta del archivo csv
-data_folder = 'D:/YOLO'
-csv_file = os.path.join(data_folder,"train_samples.csv")
+data_folder = 'YOLO'
+csv_file = os.path.join(data_folder, "train_samples.csv")
 
 #Cargamos el archivo csv
 df = pd.read_csv(csv_file)
@@ -22,7 +22,8 @@ df = pd.read_csv(csv_file)
 df_filtered = df[df['condition'] == "Spinal Canal Stenosis"]
 
 # Crear una nueva columna 'image_name' que mapea al nombre correcto de las imágenes en formato .jpg
-df_filtered['image_name'] = df_filtered.apply(lambda row: f"{row['study_id']}_{row['series_id']}_{row['instance_number']}.jpg", axis=1)
+df_filtered['image_name'] = df_filtered.apply(
+    lambda row: f"{row['study_id']}_{row['series_id']}_{row['instance_number']}.jpg", axis=1)
 
 # Definir la ruta de la carpeta de las imágenes
 images_folder = os.path.join(data_folder, "train", "images")
@@ -50,12 +51,115 @@ for index, row in df_filtered.iterrows():
     except Exception as e:
         print(f"Error al cargar la imagen {image_name}: {e}")
 
+
+# Función para contar imágenes por clase
+def contar_imagenes_por_clase(labels):
+    unique, counts = np.unique(labels, return_counts=True)
+    class_counts = dict(zip(unique, counts))
+    class_names = ['Normal', 'Mild', 'Moderate', 'Severe']
+
+    for label, count in class_counts.items():
+        print(f"Clase {class_names[label]}: {count} imágenes")
+
+    return class_counts
+
+
 # Convertir las listas en arrays de numpy
 images = np.array(images)
 labels = np.array(labels)
 
+# Contar imágenes por clase antes del aumento de datos
+print("Imágenes por clase ANTES del aumento de datos:")
+contar_imagenes_por_clase(labels)
+
+# Filtrar las imágenes de las clases "Moderate" y "Severe"
+moderate_images = images[labels == 2]  # 2 es la etiqueta para Moderate
+moderate_labels = labels[labels == 2]
+
+severe_images = images[labels == 3]  # 3 es la etiqueta para Severe
+severe_labels = labels[labels == 3]
+
+# Concatenar las imágenes y etiquetas de Moderate y Severe
+minority_images = np.concatenate([moderate_images, severe_images], axis=0)
+minority_labels = np.concatenate([moderate_labels, severe_labels], axis=0)
+
+# Crear un generador de aumento de datos
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+# Crear un generador de aumento de datos
+datagen = ImageDataGenerator(
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True,
+    fill_mode='nearest'
+)
+
+# Definir cuántas imágenes queremos para cada clase
+target_images_per_class = 9000
+
+# Para la clase Moderate (etiqueta 2)
+moderate_images = images[labels == 2]
+moderate_labels = labels[labels == 2]
+augmented_images_moderate = []
+augmented_labels_moderate = []
+
+# Generar más imágenes para Moderate
+for x_batch, y_batch in datagen.flow(moderate_images, moderate_labels, batch_size=32, shuffle=False):
+    augmented_images_moderate.append(x_batch)
+    augmented_labels_moderate.append(y_batch)
+
+    # Si llegamos a las 9000 imágenes (incluyendo las originales)
+    if len(augmented_images_moderate) * 32 + len(moderate_images) >= target_images_per_class:
+        break
+
+# Convertir a arrays de numpy
+augmented_images_moderate = np.vstack(augmented_images_moderate)
+augmented_labels_moderate = np.full(augmented_images_moderate.shape[0], 2)
+
+# Para la clase Severe (etiqueta 3)
+severe_images = images[labels == 3]
+severe_labels = labels[labels == 3]
+augmented_images_severe = []
+augmented_labels_severe = []
+
+# Generar más imágenes para Severe
+for x_batch, y_batch in datagen.flow(severe_images, severe_labels, batch_size=32, shuffle=False):
+    augmented_images_severe.append(x_batch)
+    augmented_labels_severe.append(y_batch)
+
+    # Si llegamos a las 9000 imágenes (incluyendo las originales)
+    if len(augmented_images_severe) * 32 + len(severe_images) >= target_images_per_class:
+        break
+
+# Convertir a arrays de numpy
+augmented_images_severe = np.vstack(augmented_images_severe)
+augmented_labels_severe = np.full(augmented_images_severe.shape[0], 3)
+
+# Combinar los datos originales con los datos aumentados
+images_augmented = np.concatenate([images, augmented_images_moderate, augmented_images_severe], axis=0)
+labels_augmented = np.concatenate([labels, augmented_labels_moderate, augmented_labels_severe], axis=0)
+
+
+# Verificar cuántas imágenes hay por clase después del aumento
+def contar_imagenes_por_clase(labels):
+    unique, counts = np.unique(labels, return_counts=True)
+    class_counts = dict(zip(unique, counts))
+    class_names = ['Normal', 'Mild', 'Moderate', 'Severe']
+
+    for label, count in class_counts.items():
+        print(f"Clase {class_names[label]}: {count} imágenes")
+
+
+# Contar imágenes por clase después del aumento de datos
+print("Imágenes por clase DESPUÉS del aumento de datos:")
+contar_imagenes_por_clase(labels_augmented)
+
 # Dividir los datos en entrenamiento y validación (70% entrenamiento, 30% validación)
 X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.3, random_state=42)
+
 
 # Función para crear el modelo con hiperparámetros ajustables
 def build_model(hp):
@@ -113,6 +217,7 @@ def build_model(hp):
 
     return model
 
+
 # Definir el tuner para buscar los mejores hiperparámetros
 tuner = kt.RandomSearch(
     build_model,
@@ -140,5 +245,33 @@ early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weig
 history = best_model.fit(X_train, y_train, epochs=20, validation_data=(X_val, y_val),
                          batch_size=32, callbacks=[early_stopping])
 
+# Evaluar el modelo en el conjunto de validación
+loss, accuracy = best_model.evaluate(X_val, y_val)
+print(f"Pérdida en validación: {loss}")
+print(f"Precisión en validación: {accuracy}")
+
+# Predicciones en el conjunto de validación
+y_pred = np.argmax(best_model.predict(X_val), axis=1)
+
+# Matriz de confusión
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+cm = confusion_matrix(y_val, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['Mild', 'Moderate', 'Severe'],
+            yticklabels=['Mild', 'Moderate', 'Severe'])
+plt.ylabel('Etiqueta Verdadera')
+plt.xlabel('Predicción')
+plt.title('Matriz de Confusión')
+plt.show()
+
+# Informe de clasificación
+print(classification_report(y_val, y_pred, target_names=['Mild', 'Moderate', 'Severe']))
+
 # Resumen del modelo
 best_model.summary()
+
+#Guardamos el modelo para usarlo en otro archivo
+best_model.save('modelo_lumbar.h5')
